@@ -27,6 +27,17 @@ has reports => (
   },
 );
 
+has group_reports => (
+  isa => 'HashRef',
+  traits    => [ 'Hash' ],
+  required  => 1,
+  handles   => {
+    group_report_names => 'keys',
+    group_report_named => 'get',
+    _create_group_report_named => 'set',
+  },
+);
+
 after register_with_hub => sub ($self, @) {
   Carp::confess("the report name 'list' is reserved")
     if $self->report_named('list');
@@ -41,6 +52,48 @@ after register_with_hub => sub ($self, @) {
 
 async sub fixed_text_report ($self, $who, $arg = {}) {
   return [ $arg->{text}, $arg->{alts} ];
+}
+
+async sub begin_group_report($self, $report, $target) {
+  my $hub = $self->hub;
+
+  my @results;
+
+  for my $section ($report->{sections}->@*) {
+    my ($reactor_name, $method, $arg) = @$section;
+
+    my $reactor = $hub->reactor_named($reactor_name);
+
+    # I think this will need rejiggering later. -- rjbs, 2019-03-22
+    push @results, $reactor->$method(
+      $target,
+      ($arg ? $arg : ()),
+    );
+  }
+
+  await Future->wait_all(@results);
+
+  my @hunks = map {;
+    if ($_->is_failed) {
+      $Logger->log([ "Failure during report: %s", [ $_->failure ] ]);
+    }
+
+    $_->is_done ? $_->get
+                : [ "[ internal error during report ]" ]
+  } @results;
+
+  return unless @hunks;
+
+  my $title = $report->{title};
+  my $text  = qq{$title for } . $target . q{:};
+  my $slack = qq{*$text*};
+
+  while (my $hunk = shift @hunks) {
+    $text   .= "\n" . $hunk->[0];
+    $slack  .= "\n" . ($hunk->[1]{slack} // qq{`$hunk->[0]`});
+  }
+
+  return ($text, { slack => $slack });
 }
 
 async sub begin_report ($self, $report, $target) {
@@ -130,36 +183,63 @@ command report => {
 
   $report_name = fc $report_name;
 
-  my $target = $self->resolve_name($who_name, $event->from_user);
-
   my $report = $self->report_named($report_name);
-  unless ($report) {
-    my $names = join q{, }, $self->report_names;
-    return await $event->error_reply("Sorry, I don't know that report!  I know these reports: $names.");
+  my $group_report = $self->group_report_named($report_name);
+
+  my ($text, $alt);
+
+  if ($report) {
+    my $target = $self->resolve_name($who_name, $event->from_user);
+
+    unless ($target) {
+      return await $event->error_reply("Sorry, I don't know who $who_name is!");
+    }
+
+    $event->reply(
+      "I'm generating that report now, it'll be just a moment",
+      {
+        slack_reaction => {
+          event => $event,
+          reaction => 'hourglass_flowing_sand',
+        }
+      },
+    );
+
+    # This \u is bogus, we should allow canonical name to be in the report
+    # definition. -- rjbs, 2019-03-22
+    my %local_report = (
+      %$report,
+      title => $report->{title} // "\u$report_name report",
+    );
+
+    ($text, $alt) = await $self->begin_report(\%local_report, $target);
+
+  } elsif ($group_report) {
+    my $target = $who_name;
+
+    $event->reply(
+      "I'm generating that report now, it'll be just a moment",
+      {
+        slack_reaction => {
+          event => $event,
+          reaction => 'hourglass_flowing_sand',
+        }
+      },
+    );
+
+    # This \u is bogus, we should allow canonical name to be in the report
+    # definition. -- rjbs, 2019-03-22
+    my %local_report = (
+      %$group_report,
+      title => $report->{title} // "\u$report_name report",
+    );
+
+    ($text, $alt) = await $self->begin_group_report(\%local_report, $target);
+
+  } else {
+      my $names = join q{, }, $self->report_names;
+      return await $event->error_reply("Sorry, I don't know that report!  I know these reports: $names.");
   }
-
-  unless ($target) {
-    return await $event->error_reply("Sorry, I don't know who $who_name is!");
-  }
-
-  $event->reply(
-    "I'm generating that report now, it'll be just a moment",
-    {
-      slack_reaction => {
-        event => $event,
-        reaction => 'hourglass_flowing_sand',
-      }
-    },
-  );
-
-  # This \u is bogus, we should allow canonical name to be in the report
-  # definition. -- rjbs, 2019-03-22
-  my %local_report = (
-    %$report,
-    title => $report->{title} // "\u$report_name report",
-  );
-
-  my ($text, $alt) = await $self->begin_report(\%local_report, $target);
 
   unless (defined $text) {
     $event->private_reply(
