@@ -57,8 +57,9 @@ async sub begin_report ($self, $report, $target) {
     if ($arg->{only_oncall}) {
       # TODO: break "pagerduty" out so it's (a) optional and (b) a property,
       # not a fixed string -- rjbs, 2025-02-05
-      my @usernames = map {; $self->username_from_pd($_) }
-                      $hub->reactor_named('pagerduty')->oncall_list;
+      my $pd = $hub->reactor_named('pagerduty');
+      my @usernames = map {; $pd->username_from_pd($_) }
+                      $pd->reactor_named('pagerduty')->oncall_list;
 
       next unless grep {; $_ eq $target->username } @usernames;
     }
