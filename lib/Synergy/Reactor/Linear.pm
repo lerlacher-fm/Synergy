@@ -298,7 +298,7 @@ command teams => {
   });
 };
 
-async sub _handle_search ($self, $event, $arg) {
+async sub _build_search_response($self, $arg) {
   my $search = $arg->{search};
   my $zero   = $arg->{zero};
   my $header = $arg->{header};
@@ -308,9 +308,7 @@ async sub _handle_search ($self, $event, $arg) {
   my $code = async sub ($linear) {
     my $page = await $linear->search_issues($search);
 
-    unless ($page->payload->{nodes}->@*) {
-      return await $event->reply($zero);
-    }
+    return $zero unless $page->payload->{nodes}->@*;
 
     my $text   = q{};
     my @blocks = bk_richsection(bk_bold($header));
@@ -327,7 +325,7 @@ async sub _handle_search ($self, $event, $arg) {
 
     chomp $text;
 
-    return await $event->reply(
+    return (
       "$header:\n$text",
       {
         slack => {
@@ -341,7 +339,13 @@ async sub _handle_search ($self, $event, $arg) {
     return await $code->($linear);
   }
 
-  return await $self->_with_linear_client($event, $code);
+  return await $self->_with_linear_client($code);
+}
+
+async sub _handle_search ($self, $event, $arg) {
+  my @search_response = $self->_build_search_response($arg);
+
+  await $event->reply(@search_response);
 }
 
 command search => {
@@ -705,6 +709,38 @@ async sub sb_report ($self, $who, $arg = {}) {
   return [ $msg, { slack => $msg } ];
 }
 
+async sub get_triage($self, $team_name = undef, $include_unassigned = 0) {
+  await $self->_with_linear_client($event, async sub ($linear) {
+    my %extra_search;
+
+    if ($team_name) {
+      my $team = await $linear->lookup_team($team_name);
+
+      die "I couldn't find the team you asked about!" unless $team;
+
+      %extra_search = (team => $team->{id});
+    }
+
+    if (!$include_unassigned) {
+      $extra_search{assignee} = undef;
+    }
+
+    my $adj = $include_unassigned ? q{} : ' unassigned';
+
+    return await $self->_build_search_response(
+      {
+        search => {
+          state    => 'Triage',
+          %extra_search,
+        },
+        zero   => "No$adj issues in triage!  Great!",
+        header => "Current$adj triage work",
+        linear => $linear,
+      }
+    );
+  });
+}
+
 command triage => {
   help => reformat_help(<<~'EOH'),
     *triage `[TEAM]`*: list unassigned issues in the Triage state
@@ -738,37 +774,24 @@ command triage => {
       Synergy::X->throw_public("triage: too many args - please only pass a single arg for the team name (I got: $all_args)");
     }
 
-    if (length $args[0]) {
-      my $team_name = $args[0];
-      my $team = await $linear->lookup_team($team_name);
+    my $team_name = length $args[0] ? $args[0] : undef;
 
-      unless ($team) {
-        return await $event->error_reply("I couldn't find the team you asked about!");
-      }
+    return await $event->reply($self->get_triage($team_name, $opt_all ));
 
-      %extra_search = (team => $team->{id});
-    }
-
-    if (!$opt_all) {
-      $extra_search{assignee} = undef;
-    }
-
-    my $adj = $opt_all ? q{} : ' unassigned';
-
-    return await $self->_handle_search(
-      $event,
-      {
-        search => {
-          state    => 'Triage',
-          %extra_search,
-        },
-        zero   => "No$adj issues in triage!  Great!",
-        header => "Current$adj triage work",
-        linear => $linear,
-      }
-    );
   });
 };
+
+async sub triage_report($self, $who, $arg = {}) {
+  my $linear = $self->_linear_client_for_user($who);
+
+  return [] unless $linear;
+
+  my $team_name = $arg->{team_name};
+  my $include_unassigned = $arg->{include_unassigned};
+
+  return await $self->get_triage($team_name, $include_unassigned);
+
+}
 
 command agenda => {
   help => reformat_help(<<~'EOH'),
