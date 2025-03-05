@@ -293,6 +293,18 @@ async sub handle_create ($self, $event, $switches) {
     );
   }
 
+
+  my $key_file = $self->ssh_key_id
+               ? ("$ENV{HOME}/.ssh/" . $self->ssh_key_id)
+               : undef;
+
+  unless ($key_file && -r $key_file) {
+    $Logger->log(["Cannot read SSH key for inabox setup (from %s)", $self->ssh_key_id]);
+    return await $event->reply(
+      "No SSH credentials for running box setup. This is a problem - aborting."
+    );
+  }
+
   my $ssh_key  = await $self->_get_ssh_key;
 
   my $username = $user->username;
@@ -356,18 +368,6 @@ async sub handle_create ($self, $event, $switches) {
       $self->box_domain,
       $name,
       $ip_address,
-    );
-  }
-
-  my $key_file = $self->ssh_key_id
-               ? ("$ENV{HOME}/.ssh/" . $self->ssh_key_id)
-               : undef;
-
-  unless ($key_file && -r $key_file) {
-    $Logger->log(["Cannot read SSH key for inabox setup (from %s)", $self->ssh_key_id]);
-    return await $event->reply(
-      "Box created.  I can't run setup because I have no SSH credentials. Good luck."
-      . $self->_format_droplet($droplet)
     );
   }
 
