@@ -709,36 +709,37 @@ async sub sb_report ($self, $who, $arg = {}) {
   return [ $msg, { slack => $msg } ];
 }
 
-async sub get_triage($self, $team_name = undef, $include_unassigned = 0) {
-  await $self->_with_linear_client($event, async sub ($linear) {
-    my %extra_search;
+async sub get_triage($self, $event = undef, $team_name = undef, $include_unassigned = 0) {
 
-    if ($team_name) {
-      my $team = await $linear->lookup_team($team_name);
+  my $linear = $event ? $self->_linear_client_for_user($event->from_user) : $self->_linear_client_for_token($self->bot_api_token);
 
-      die "I couldn't find the team you asked about!" unless $team;
+  my %extra_search;
 
-      %extra_search = (team => $team->{id});
+  if ($team_name) {
+    my $team = await $linear->lookup_team($team_name);
+
+    die "I couldn't find the team you asked about!" unless $team;
+
+    %extra_search = (team => $team->{id});
+  }
+
+  if (!$include_unassigned) {
+    $extra_search{assignee} = undef;
+  }
+
+  my $adj = $include_unassigned ? q{} : ' unassigned';
+
+  return await $self->_build_search_response(
+    {
+      search => {
+        state    => 'Triage',
+        %extra_search,
+      },
+      zero   => "No$adj issues in triage!  Great!",
+      header => "Current$adj triage work",
+      linear => $linear,
     }
-
-    if (!$include_unassigned) {
-      $extra_search{assignee} = undef;
-    }
-
-    my $adj = $include_unassigned ? q{} : ' unassigned';
-
-    return await $self->_build_search_response(
-      {
-        search => {
-          state    => 'Triage',
-          %extra_search,
-        },
-        zero   => "No$adj issues in triage!  Great!",
-        header => "Current$adj triage work",
-        linear => $linear,
-      }
-    );
-  });
+  );
 }
 
 command triage => {
