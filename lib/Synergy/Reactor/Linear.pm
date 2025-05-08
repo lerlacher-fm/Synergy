@@ -716,7 +716,9 @@ async sub get_triage($self, $event = undef, $team_name = undef, $include_unassig
   my %extra_search;
 
   if ($team_name) {
-    my $team = await $linear->lookup_team($team_name);
+
+    # if $team_name looks like a team id, use it as is, otherwise look it up
+    my $team = ($team_name =~ /^[a-z0-9-]+$/) ? $team_name : await $linear->lookup_team($team_name);
 
     die "I couldn't find the team you asked about!" unless $team;
 
