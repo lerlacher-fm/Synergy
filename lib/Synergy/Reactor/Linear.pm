@@ -777,7 +777,7 @@ command triage => {
 
     my $team_name = length $args[0] ? $args[0] : undef;
 
-    return await $event->reply($self->get_triage($team_name, $opt_all ));
+    return await $event->reply(await $self->get_triage($event, $team_name, $opt_all ));
 
   });
 };
@@ -790,7 +790,7 @@ async sub triage_report($self, $who, $arg = {}) {
   my $team_name = $arg->{team_name};
   my $include_unassigned = $arg->{include_unassigned};
 
-  return await $self->get_triage($team_name, $include_unassigned);
+  return [ await $self->get_triage(undef, $team_name, $include_unassigned) ];
 
 }
 
