@@ -787,7 +787,7 @@ async sub triage_report($self, $who, $arg = {}) {
 
   return [] unless $linear;
 
-  my $team_name = $arg->{team_name};
+  my $team_name = $arg->{team_name} || $self->get_user_preference($who, 'default-team');
   my $include_unassigned = $arg->{include_unassigned};
 
   return [ await $self->get_triage(undef, $team_name, $include_unassigned) ];
