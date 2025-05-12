@@ -401,6 +401,18 @@ sub check_for_shift_changes ($self) {
 
   my $now_dt = DateTime->from_epoch(epoch => $now);
 
+  my $linear_reactor = $hub->reactor_named('Linear');
+
+  if ($linear_reactor) {
+    my $teams = $linear_reactor->get_teams->await->get;
+
+    TEAM: for my $team (@{$teams}) {
+      $Logger->log("TimeClock: check team reports for $team");
+    }
+  }
+
+
+
   USER: for my $user ($self->hub->user_directory->users) {
     next unless $user->has_identity_for($channel->name);
 

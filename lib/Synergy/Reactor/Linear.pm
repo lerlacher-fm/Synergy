@@ -276,6 +276,13 @@ listener issue_mention => async sub ($self, $event) {
   });
 };
 
+async sub get_teams($self, $event = undef) {
+  my $linear = $event ? $self->_linear_client_for_user($event->from_user) : $self->_linear_client_for_token($self->bot_api_token);
+
+  my $teams = await $linear->teams;
+  return $teams;
+}
+
 command teams => {
   help => "*teams*: list all the teams in Linear",
 } => async sub ($self, $event, $rest) {
@@ -283,19 +290,16 @@ command teams => {
     return await $event->error_reply(q{"teams" doesn't take any argument.});
   }
 
-  await $self->_with_linear_client($event, async sub ($linear) {
-    my $teams = await $linear->teams;
+  my $teams = await $self->get_teams($event);
 
-    my $text  = qq{Teams in Linear\n};
-    my $slack = qq{*Teams in Linear*\n};
-    for my $team_key (sort keys %$teams) {
-      my $this = sprintf "%s — %s\n", uc $team_key, $teams->{$team_key}{name};
-      $text  .= $this;
-      $slack .= $this;
-    }
-
-    return await $event->reply($text, { slack => $slack });
-  });
+  my $text  = qq{Teams in Linear\n};
+  my $slack = qq{*Teams in Linear*\n};
+  for my $team_key (sort keys %$teams) {
+    my $this = sprintf "%s — %s\n", uc $team_key, $teams->{$team_key}{name};
+    $text  .= $this;
+    $slack .= $this;
+  }
+  return await $event->reply($text, { slack => $slack });
 };
 
 async sub _build_search_response($self, $arg) {
