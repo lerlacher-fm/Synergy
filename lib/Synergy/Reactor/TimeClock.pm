@@ -395,23 +395,81 @@ sub check_for_shift_changes ($self) {
 
   my %report = map {; $_ => $report_reactor->report_named($_) } keys %if;
 
-  return unless grep {; defined } values %report;
+
+  my %group_report = map {; $_ => $report_reactor->group_report_named($_) } keys %if;
+
 
   $Logger->log("TimeClock: checking for shift changes");
 
   my $now_dt = DateTime->from_epoch(epoch => $now);
 
-  my $linear_reactor = $hub->reactor_named('Linear');
+  if (grep {; defined } values %group_report) {
 
-  if ($linear_reactor) {
-    my $teams = $linear_reactor->get_teams->await->get;
+    my $linear_reactor = $self->hub->reactor_named('linear');
 
-    TEAM: for my $team (@{$teams}) {
-      $Logger->log("TimeClock: check team reports for $team");
+    if ($linear_reactor) {
+      my $teams = $linear_reactor->get_teams->get;
+
+      TEAM: for my $team (keys %$teams) {
+        $Logger->log("TimeClock: check team reports for $team");
+
+        for my $report (keys %group_report) {
+          if (grep {; $_ eq $team} $report->groups)
+          {
+            my $slack_channel = $self->hub->channel_named('slack');
+            my $slack_client = $slack_channel->slack;
+
+            #my $team_slack_channel = $slack_client->channel_named($team);
+            my $team_slack_channel = $slack_client->channel_named('bottest');
+
+
+            $Logger->log([ "kicking off %s report for %s", $report, $team_slack_channel->{name} ]);
+            my $reportf = $report_reactor->begin_report($group_report{$report}, $team);
+
+            $reportf
+              ->else(sub (@error) {
+                $Logger->log([
+                  "ERROR sending %s report to %s: %s",
+                  $report,
+                  $team,
+                  "@error",
+                ]);
+                Future->done;
+              })
+              ->then(sub ($text, $alts) {
+                unless (defined $text) {
+                  # I don't know anymore whether this is odd.  Rather than audit, I'm
+                  # going to add this log line and then either drop it when I realize
+                  # it happens all the time on purpose *or* fix things where it shows
+                  # up. -- rjbs, 2024-04-19
+                  $Logger->log([
+                    "no text returned by %s report for %s",
+                    $report,
+                    $team,
+                  ]);
+                  return Future->done;
+                }
+
+                $Logger->log([ "sending %s report for %s", $report, $team ]);
+                $channel->send_message($team_slack_channel->{id}, $text, $alts);
+
+                $self->set_last_report_time_for($team, $now);
+                return Future->done;
+              })
+              ->retain;
+
+
+
+
+
+          }
+        }
+      }
     }
   }
 
 
+  return unless grep {; defined } values %report;
 
   USER: for my $user ($self->hub->user_directory->users) {
     next unless $user->has_identity_for($channel->name);

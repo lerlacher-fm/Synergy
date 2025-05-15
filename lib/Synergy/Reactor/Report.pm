@@ -140,7 +140,7 @@ async sub begin_report ($self, $report, $target) {
   return unless @hunks;
 
   my $title = $report->{title};
-  my $text  = qq{$title for } . $target->username . q{:};
+  my $text  = qq{$title for } . (ref($target) ?  $target->username : $target) . q{:};
   my $slack = qq{*$text*};
 
   while (my $hunk = shift @hunks) {
