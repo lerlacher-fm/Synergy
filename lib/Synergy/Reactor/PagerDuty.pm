@@ -580,16 +580,28 @@ command resolve => {
 };
 
 command snooze => {
-  help => 'Snooze a PagerDuty incidents. Usage:
+  help => reformat_help(<<~'EOH'),
+    *snooze*: snooze alerts in PagerDuty for a while
 
-  snooze ALERT-NUMBER for DURATION
-  snooze all for DURATION',
+    You can run this in one of several ways:
+
+    • *snooze ALERT-NUMBER for DURATION*: snooze one incident
+    • *snooze all for DURATION*: snooze every active incident
+    EOH
 } => async sub ($self, $event, $rest) {
-  my ($incident, $dur) = $rest =~ /^#?(\S+)\s+for\s+(.*)/i;
+  my ($what, $dur) = $rest =~ /^#?(\S+)\s+for\s+(.*)/i;
 
-  unless ($incident && $dur) {
+  unless ($what && $dur) {
     return await $event->error_reply(
       "Sorry, I don't understand. Say 'snooze INCIDENT-NUM for DURATION'."
+    );
+  }
+
+  my $snooze_all = lc $what eq 'all';
+
+  unless ($snooze_all || $what =~ /\A[0-9]+\z/) {
+    return await $event->error_reply(
+      qq{I don't know what "$what" is. Say an incident number, or "all".}
     );
   }
 
@@ -601,38 +613,53 @@ command snooze => {
 
   my @incidents = await $self->_get_incidents(qw(triggered acknowledged));
 
-  # select a single incident if we
-  my @relevant = ($incident =~ /\d+/) ? grep {; $_->{incident_number} == $incident } @incidents : @incidents;
+  my @relevant = $snooze_all
+               ? @incidents
+               : grep {; $_->{incident_number} == $what } @incidents;
 
   unless (@relevant) {
-    return await $event->error_reply("I couldn't find an active incident for '$incident'");
+    return await $event->error_reply(
+      $snooze_all ? "There's nothing active to snooze; the board is clear!"
+                  : "I couldn't find an active incident for #$what"
+    );
   }
 
   my @snoozed;
   my @errors;
 
   for my $item (@relevant) {
-
-    my $id = $item->{id};
-
     my $res = await $self->_pd_request_for_user(
       $event->from_user,
-      POST => "/incidents/$id/snooze",
+      POST => "/incidents/$item->{id}/snooze",
       { duration => $seconds }
     );
 
     if (my $incident = $res->{incident}) {
-      my $title = $incident->{title};
-      push @snoozed, "#$id ($title)";
+      push @snoozed, sprintf '#%s (%s)',
+        $incident->{incident_number},
+        $incident->{title};
     } else {
-      push @errors, $res->{message};
+      push @errors, sprintf '#%s: %s',
+        $item->{incident_number},
+        $res->{message} // 'nothing useful';
     }
   }
 
-  my $reply = sprintf("Snoozed incidents for %s: \n%s", duration($seconds), join("\n", @snoozed));
+  unless (@snoozed) {
+    return await $event->error_reply(
+      "Something went wrong talking to PagerDuty; they said:\n"
+      . join("\n", @errors)
+    );
+  }
+
+  my $reply = @snoozed == 1 && ! @errors
+            ? sprintf('%s snoozed for %s; enjoy the peace and quiet!',
+                $snoozed[0], duration($seconds))
+            : sprintf("Snoozed for %s:\n%s",
+                duration($seconds), join("\n", @snoozed));
 
   if (@errors) {
-    my $reply .= sprintf("\n\nUnfortunately we also received errors:\n%s", join("\n", @errors));
+    $reply .= sprintf "\n\nI couldn't snooze these:\n%s", join("\n", @errors);
   }
 
   return await $event->reply($reply);
