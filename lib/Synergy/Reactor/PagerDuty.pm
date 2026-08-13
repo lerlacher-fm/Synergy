@@ -522,16 +522,66 @@ responder 'give-oncall' => {
 };
 
 command ack => {
-  help => '*ack*: acknowledge all triggered alerts in PagerDuty',
+  help => reformat_help(<<~'EOH'),
+    *ack*: acknowledge alerts in PagerDuty
+
+    You can run this in one of several ways:
+
+    • *ack*: acknowledge every triggered alert
+    • *ack all*: the same thing, said out loud
+    • *ack ALERT-NUMBER*: acknowledge just that one alert
+    EOH
 } => async sub ($self, $event, $rest) {
   unless ($self->is_known_user($event)) {
     return await $event->error_reply("I don't know you, so I'm ignoring that.");
   }
 
-  my $n_acked = await $self->_ack_all($event);
+  # Bare "ack" means "ack all"; that's the whole point of the command.
+  my $text = $rest // 'all';
+  my $what = $self->_incident_selector($text);
 
-  my $noun = $n_acked == 1 ? 'incident' : 'incidents';
-  $event->reply("Successfully acked $n_acked $noun. Good luck!");
+  unless (defined $what) {
+    return await $event->error_reply(
+      qq{I don't know what "$text" is. Say an incident number, or "all".}
+    );
+  }
+
+  if ($what eq 'all') {
+    my $n_acked = await $self->_ack_all($event);
+
+    # Not the same as "the board is clear": acked incidents are still active.
+    return await $event->reply("There was nothing triggered to ack!")
+      unless $n_acked;
+
+    my $noun = $n_acked == 1 ? 'incident' : 'incidents';
+    return await $event->reply("Successfully acked $n_acked $noun. Good luck!");
+  }
+
+  my @incidents = await $self->_get_incidents(qw(triggered acknowledged));
+
+  my ($incident) = grep {; $_->{incident_number} == $what } @incidents;
+
+  unless ($incident) {
+    return await $event->error_reply("I couldn't find an active incident for #$what");
+  }
+
+  if ($incident->{status} eq 'acknowledged') {
+    return await $event->reply("#$what ($incident->{title}) was already acked!");
+  }
+
+  my @acked = await $self->_update_status_for_incidents(
+    $event->from_user,
+    'acknowledged',
+    [ $incident->{id} ],
+  );
+
+  unless (@acked) {
+    return await $event->error_reply(
+      "Something went wrong talking to PagerDuty; I couldn't ack #$what."
+    );
+  }
+
+  return await $event->reply("Acked #$what ($incident->{title}). Good luck!");
 };
 
 command incidents => {
@@ -576,22 +626,36 @@ command resolve => {
     });
   }
 
-  return await $event->error_reply("I don't know what you want to ack.  Check the help!");
+  return await $event->error_reply("I don't know what you want to resolve.  Check the help!");
 };
 
 command snooze => {
-  help => 'Snooze a PagerDuty incidents. Usage:
+  help => reformat_help(<<~'EOH'),
+    *snooze*: snooze alerts in PagerDuty for a while
 
-  snooze ALERT-NUMBER for DURATION
-  snooze all for DURATION',
+    You can run this in one of several ways:
+
+    • *snooze ALERT-NUMBER for DURATION*: snooze one incident
+    • *snooze all for DURATION*: snooze every active incident
+    EOH
 } => async sub ($self, $event, $rest) {
-  my ($incident, $dur) = $rest =~ /^#?(\S+)\s+for\s+(.*)/i;
+  my ($text, $dur) = ($rest // '') =~ /^(\S+)\s+for\s+(.*)/i;
 
-  unless ($incident && $dur) {
+  unless ($text && $dur) {
     return await $event->error_reply(
       "Sorry, I don't understand. Say 'snooze INCIDENT-NUM for DURATION'."
     );
   }
+
+  my $what = $self->_incident_selector($text);
+
+  unless (defined $what) {
+    return await $event->error_reply(
+      qq{I don't know what "$text" is. Say an incident number, or "all".}
+    );
+  }
+
+  my $snooze_all = $what eq 'all';
 
   my $seconds = eval { parse_duration($dur) };
 
@@ -601,38 +665,53 @@ command snooze => {
 
   my @incidents = await $self->_get_incidents(qw(triggered acknowledged));
 
-  # select a single incident if we
-  my @relevant = ($incident =~ /\d+/) ? grep {; $_->{incident_number} == $incident } @incidents : @incidents;
+  my @relevant = $snooze_all
+               ? @incidents
+               : grep {; $_->{incident_number} == $what } @incidents;
 
   unless (@relevant) {
-    return await $event->error_reply("I couldn't find an active incident for '$incident'");
+    return await $event->error_reply(
+      $snooze_all ? "There's nothing active to snooze; the board is clear!"
+                  : "I couldn't find an active incident for #$what"
+    );
   }
 
   my @snoozed;
   my @errors;
 
   for my $item (@relevant) {
-
-    my $id = $item->{id};
-
     my $res = await $self->_pd_request_for_user(
       $event->from_user,
-      POST => "/incidents/$id/snooze",
+      POST => "/incidents/$item->{id}/snooze",
       { duration => $seconds }
     );
 
     if (my $incident = $res->{incident}) {
-      my $title = $incident->{title};
-      push @snoozed, "#$id ($title)";
+      push @snoozed, sprintf '#%s (%s)',
+        $incident->{incident_number},
+        $incident->{title};
     } else {
-      push @errors, $res->{message};
+      push @errors, sprintf '#%s: %s',
+        $item->{incident_number},
+        $res->{message} // 'nothing useful';
     }
   }
 
-  my $reply = sprintf("Snoozed incidents for %s: \n%s", duration($seconds), join("\n", @snoozed));
+  unless (@snoozed) {
+    return await $event->error_reply(
+      "Something went wrong talking to PagerDuty; they said:\n"
+      . join("\n", @errors)
+    );
+  }
+
+  my $reply = @snoozed == 1 && ! @errors
+            ? sprintf('%s snoozed for %s; enjoy the peace and quiet!',
+                $snoozed[0], duration($seconds))
+            : sprintf("Snoozed for %s:\n%s",
+                duration($seconds), join("\n", @snoozed));
 
   if (@errors) {
-    my $reply .= sprintf("\n\nUnfortunately we also received errors:\n%s", join("\n", @errors));
+    $reply .= sprintf "\n\nI couldn't snooze these:\n%s", join("\n", @errors);
   }
 
   return await $event->reply($reply);
@@ -928,6 +1007,18 @@ sub _update_status_for_incidents ($self, $who, $status, $incident_ids) {
   }
 
   return Future->done(@incidents);
+}
+
+# The only ways to name incidents are "all" and an incident number, with or
+# without a leading "#".  This gives back the string "all", an incident
+# number, or undef when the text is neither of those.
+sub _incident_selector ($self, $text) {
+  return 'all' if lc $text eq 'all';
+
+  my ($number) = $text =~ /\A#?([0-9]+)\z/;
+  return $number if defined $number;
+
+  return undef;
 }
 
 sub _ack_all ($self, $event) {
