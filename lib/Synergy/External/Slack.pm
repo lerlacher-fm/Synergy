@@ -134,7 +134,7 @@ async sub connect ($self) {
 
   until ($json) {
     my $res = await $self->hub->http_client->GET(
-      "https://slack.com/api/rtm.connect?token=" . $self->api_key
+      "https://slack.com/api/app.connections.open", { headers => { Authorization => "Bearer " . $self->api_key}}
     );
 
     if ($res->code == 429) {
