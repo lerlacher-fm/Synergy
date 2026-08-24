@@ -18,6 +18,8 @@ use Synergy::Logger '$Logger';
 
 with 'Synergy::Role::HubComponent';
 
+has app_key => ( is => 'ro', required => 1 );
+
 has api_key => ( is => 'ro', required => 1 );
 
 has privileged_api_key => (
@@ -132,9 +134,29 @@ async sub connect ($self) {
 
   my $json;
 
+  my $user_info_res = await $self->hub->http_client->GET(
+      "https://slack.com/api/auth.test", content_type => 'application/x-www-form-urlencoded', headers => { Authorization => "Bearer " . $self->api_key}
+    );
+  $json = decode_json($user_info_res->content);
+  die "Could not connect to Slack RTM: $json->{error}"
+      unless $json->{ok};
+
+  $Logger->log($user_info_res->content);
+
+  my $our_name = $json->{user};
+  $our_name = 'synergy' if $our_name eq 'synergee';
+
+  $Logger->log("we have a name: $our_name");
+
+  $self->_set_own_name($our_name);
+  $self->_set_own_id($json->{user_id});
+  $self->_set_team_data({team => $json->{team}, team_id => $json->{team_id}});
+
+  $json = undef;
+
   until ($json) {
-    my $res = await $self->hub->http_client->GET(
-      "https://slack.com/api/app.connections.open", { headers => { Authorization => "Bearer " . $self->api_key}}
+    my $res = await $self->hub->http_client->POST(
+      "https://slack.com/api/apps.connections.open", '', content_type => 'application/x-www-form-urlencoded', headers => { Authorization => "Bearer " . $self->app_key}
     );
 
     if ($res->code == 429) {
@@ -145,7 +167,9 @@ async sub connect ($self) {
 
     $json = decode_json($res->content);
 
-    die "Could not connect to Slack RTM: $json->{error}"
+    my $reqh = $res->request->header('Authorization');
+
+    die "Could not connect to Slack RTM: $json->{error} // $reqh"
       unless $json->{ok};
   }
 
@@ -156,12 +180,6 @@ async sub connect ($self) {
   # do. I *think* that reinstalling the app to our workspace would fix this,
   # but I'm not entirely sure and I don't want to make everyone open yet
   # another DM with synergy, so here we are. -- michael, 2019-06-03
-  my $our_name = $json->{self}->{name};
-  $our_name = 'synergy' if $our_name eq 'synergee';
-
-  $self->_set_own_name($our_name);
-  $self->_set_own_id($json->{self}->{id});
-  $self->_set_team_data($json->{team});
 
   my $client = $self->client;
 

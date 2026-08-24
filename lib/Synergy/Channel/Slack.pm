@@ -18,6 +18,12 @@ my $JSON = JSON::MaybeXS->new->canonical;
 with 'Synergy::Role::Channel',
      'Synergy::Role::ProvidesUserStatus';
 
+has app_key => (
+  is => 'ro',
+  isa => 'Str',
+  required => 1,
+);
+
 has api_key => (
   is => 'ro',
   isa => 'Str',
@@ -37,6 +43,7 @@ has slack => (
   default => sub ($self) {
     my $slack = Synergy::External::Slack->new(
       loop    => $self->loop,
+      app_key => $self->app_key,
       api_key => $self->api_key,
       name    => '_external_slack',
       privileged_api_key => $self->privileged_api_key,
