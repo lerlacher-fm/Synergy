@@ -222,34 +222,42 @@ sub send_frame ($self, $frame) {
   my $frame_id = $i++;
   $frame->{id} = $frame_id;
 
+  $Logger->log(['send_frame: %s', Dumper $frame]);
+
   if ($self->connected) {
+    $Logger->log('sent frame');
     $self->client->send_frame(masked => 1, buffer => encode_json($frame));
   } else {
+    $Logger->log('queued frame');
     # Save it til after we've successfully reconnected
     $self->queue_frame($frame);
   }
 
-  my $f = $self->loop->new_future;
-  $self->pending_frames->{$frame_id} = $f;
+  unless ($frame->{envelope_id}) {
 
-  my $timeout = $self->loop->timeout_future(after => 3);
-  $timeout->on_fail(sub {
-    $Logger->log("failed to get response from slack; trying to reconnect");
+	  my $f = $self->loop->new_future;
+	  $self->pending_frames->{$frame_id} = $f;
 
-    # XXX Blocking here is crappy.  This is another place where we've pushed
-    # the "where is it async" around under the carpet, but haven't fully ironed
-    # out the lump yet. -- rjbs, 2023-10-10
-    $self->client->close;
-    $self->connect->get;
 
-    # Also fail any pending futures for this frame.
-    my $f = delete $self->pending_frames->{$frame_id};
-    $f->fail("timed out on connection to slack")  if $f;
-  });
+	  my $timeout = $self->loop->timeout_future(after => 10);
+	  $timeout->on_fail(sub {
+	    $Logger->log("failed to get response from slack; trying to reconnect");
 
-  $self->pending_timeouts->{$frame_id} = $timeout;
+	    # XXX Blocking here is crappy.  This is another place where we've pushed
+	    # the "where is it async" around under the carpet, but haven't fully ironed
+	    # out the lump yet. -- rjbs, 2023-10-10
+	    $self->client->close;
+	    $self->connect->get;
 
-  return $f;
+	    # Also fail any pending futures for this frame.
+	    my $f = delete $self->pending_frames->{$frame_id};
+	    $f->fail("timed out on connection to slack")  if $f;
+	  });
+
+	  $self->pending_timeouts->{$frame_id} = $timeout;
+
+	  return $f;
+  }
 }
 
 sub handle_frame ($self, $slack_event) {
@@ -260,6 +268,15 @@ sub handle_frame ($self, $slack_event) {
   $Logger->log(['handle_frame: %s', $slack_event ]);
 
   my $type = $slack_event->{type} // '';
+  my $envelope = $slack_event->{envelope_id};
+
+  # acknowledge frame
+  if ($envelope) {
+	  $self->send_frame({
+		  type => $type,
+		  envelope_id => $slack_event->{envelope_id},
+	  });
+  }
 
   if ($type eq 'team_join' or $type eq 'user_change') {
     $self->_update_user($slack_event->{user});
