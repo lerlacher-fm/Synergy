@@ -144,7 +144,7 @@ sub _mk_frame_handler ($self) {
     }
 
     if ($slack_event->{type} eq 'hello') {
-      $Logger->log("Got 'hello' from Slack RTM!");
+      $Logger->log("Got 'hello' from Slack Socket API!");
       return;
     }
 

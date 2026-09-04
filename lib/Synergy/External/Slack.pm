@@ -255,6 +255,9 @@ sub handle_frame ($self, $slack_event) {
   # These are the only way we'll ever hear about somebody who joined, or
   # changed their name, after we started up.  Without them, we'd go on calling
   # them "<unknown user U123ABC>" until the next restart. -- rjbs, 2026-08-19
+
+  $Logger->log(['handle_frame: %s', Dumper $slack_event ]);
+
   my $type = $slack_event->{type} // '';
 
   if ($type eq 'team_join' or $type eq 'user_change') {
