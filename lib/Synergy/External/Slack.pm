@@ -204,7 +204,8 @@ async sub connect ($self) {
         notifier_name => 'slack-ping',
         interval => 10,
         on_tick  => sub {
-          $self->send_frame({ type => 'ping' });
+          $Logger->log("we will not ping");
+          #$self->send_frame({ type => 'ping' });
         }
       );
 
@@ -256,7 +257,7 @@ sub handle_frame ($self, $slack_event) {
   # changed their name, after we started up.  Without them, we'd go on calling
   # them "<unknown user U123ABC>" until the next restart. -- rjbs, 2026-08-19
 
-  $Logger->log(['handle_frame: %s', Dumper $slack_event ]);
+  $Logger->log(['handle_frame: %s', $slack_event ]);
 
   my $type = $slack_event->{type} // '';
 
@@ -360,13 +361,15 @@ sub _send_plain_text ($self, $channel, $text) {
     $channel = $self->dm_channel_for_address($channel);
   }
 
-  my $f = $self->send_frame({
-    type => 'message',
+  my %args = (
     channel => $channel,
+    as_user => \1,
     text    => $text,
-  });
+  );
 
-  return $f;
+  my $http_future = $self->api_call('chat.postMessage', \%args);
+
+  return $http_future;
 }
 
 sub _send_rich_text ($self, $channel, $rich, $alts) {
