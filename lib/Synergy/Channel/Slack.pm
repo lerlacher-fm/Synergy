@@ -6,6 +6,7 @@ use utf8;
 use Future::AsyncAwait;
 use JSON::MaybeXS;
 use IO::Async::Timer::Periodic;
+use Data::Dumper::Concise;
 
 use Synergy::External::Slack;
 use Synergy::Event;
@@ -125,15 +126,24 @@ sub _mk_frame_handler ($self) {
   return sub ($client, $frame) {
     return unless $frame;
 
-    my $slack_event;
-    unless (eval { $slack_event = $JSON->decode($frame) }) {
+    $Logger->log(['we got a frame: %s', $frame]);
+
+    my $frame_data;
+    unless (eval { $frame_data = $JSON->decode($frame) }) {
       $Logger->log("error decoding frame content: <$frame> <$@>");
       return;
     }
 
     # This is silly, but Websocket::Client's on_frame isn't a stack of
     # subs to call, it's only a single sub. -- michael, 2019-02-03
-    $self->slack->handle_frame($slack_event);
+    $self->slack->handle_frame($frame_data);
+
+    my $slack_event = $frame_data->{payload}->{event};
+
+    if (!$slack_event) {
+	    $Logger->log('no event in:', $frame_data);
+	    return;
+    }
 
     if (! $slack_event->{type} && $slack_event->{reply_to}) {
       unless ($slack_event->{ok}) {
@@ -377,11 +387,24 @@ sub send_ephemeral_message ($self, $channel, $user, $text) {
 }
 
 sub note_reply ($self, $event, $future, $args = {}) {
+
+  $Logger->log(['noting reply: %s', Dumper($event->transport_data)]);
+
   my $ts = $event->transport_data->{ts};
   return unless $ts;
 
   $future->on_done(sub ($data) {
-    unless ($data->{type} eq 'slack') {
+		  $Logger->log(['reply data: %s', Dumper($data)]);
+
+    my $decoded = $data->decoded_content({charset => 'none'});
+    my $dejsond;
+    unless (eval { $dejsond = $JSON->decode($decoded) }) {
+      $Logger->log("error decoding response content: <$decoded> <$@>");
+      return;
+    }
+    $Logger->log(['response: %s', $dejsond]);
+
+    unless ($dejsond->{message}) {
       $Logger->log([
         "got bizarre type back from slack future: %s",
         $data
@@ -391,10 +414,10 @@ sub note_reply ($self, $event, $future, $args = {}) {
 
     # Slack reactions results just have { ok: true }
     # -- michael, 2019-02-05
-    return unless $data->{transport_data}{ts};
+    return unless $dejsond->{ts};
 
     $self->add_reply($event, {
-      reply_ts  => $data->{transport_data}{ts},
+      reply_ts  => $dejsond->{ts},
       was_error => $args->{was_error} ? 1 : 0,
     });
   });
